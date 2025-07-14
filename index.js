@@ -1,5 +1,5 @@
-const { Client, GatewayIntentBits, Partials, EmbedBuilder } = require("discord.js");
-require("dotenv").config(); // Load environment variables from .env
+const { Client, GatewayIntentBits, Partials, EmbedBuilder, ChannelType, PermissionsBitField } = require("discord.js");
+require("dotenv").config();
 
 const client = new Client({
   intents: [
@@ -9,87 +9,95 @@ const client = new Client({
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildMembers
   ],
-  partials: [Partials.Channel] // Required for DM support
+  partials: [Partials.Channel]
 });
 
-const { prefix, ServerID } = require("./config.json");
+const { ServerID } = require("./config.json");
 
-client.on("ready", () => {
+// Replace with your real values
+const STAFF_ROLE_ID = '1381979543434297445';
+const MODMAIL_CATEGORY_ID = '1386308114189385828';
+
+client.once("ready", () => {
   console.log("✅ Bot is online");
-  client.user.setActivity("Watching My DMs");
+  client.user.setActivity("Watching DMs");
 });
 
+// 📬 DM handler — user sends message to bot
 client.on("messageCreate", async message => {
   if (message.author.bot) return;
 
-  // ========== DM HANDLER ==========
-  if (message.channel.type === 1 || message.channel.type === "DM") {
+  // --- Handle DMs ---
+  if (message.channel.type === ChannelType.DM) {
     const guild = client.guilds.cache.get(ServerID);
     if (!guild) return console.log("❌ Server not found!");
 
-    const modChannel = guild.channels.cache.find(channel =>
-      channel.name.includes(`modmail-${message.author.username.toLowerCase().replace(/[^a-z0-9]/g, '-')}`)
+    const existingThread = guild.channels.cache.find(channel =>
+      channel.topic === `UserID:${message.author.id}`
     );
 
     const embed = new EmbedBuilder()
       .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
-      .setDescription(message.content || "*No text provided*")
+      .setDescription(message.content || "*No message content*")
       .setColor(0x3498db)
       .setTimestamp();
 
-    const modmailCategoryId = '1386308114189385828'; // replace with your actual ID
-    const staffRoleId = '1381979543434297445';
-
-    if (modChannel) {
-      modChannel.send({ embeds: [embed] });
+    if (existingThread) {
+      existingThread.send({ embeds: [embed] });
     } else {
-      const channelName = `modmail-${message.author.username.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${message.author.id.slice(-4)}`;
+      const safeName = message.author.username.toLowerCase().replace(/[^a-z0-9]/g, '-');
+      const channelName = `modmail-${safeName}-${message.author.id.slice(-4)}`;
 
-      const channel = await guild.channels.create({
+      const thread = await guild.channels.create({
         name: channelName,
-        type: 0,
-        parent: modmailCategoryId,
-        topic: `Modmail thread with ${message.author.tag}`,
+        type: ChannelType.GuildText,
+        parent: MODMAIL_CATEGORY_ID,
+        topic: `UserID:${message.author.id}`,
         permissionOverwrites: [
           {
             id: guild.roles.everyone,
-            deny: ["ViewChannel"]
+            deny: [PermissionsBitField.Flags.ViewChannel]
           },
           {
             id: client.user.id,
-            allow: ["ViewChannel", "SendMessages"]
+            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages]
           },
           {
-            id: staffRoleId,
-            allow: ["ViewChannel", "SendMessages"]
+            id: STAFF_ROLE_ID,
+            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages]
           }
         ]
       });
 
-      channel.send({
-        content: `📬 New modmail opened by <@${message.author.id}> — <@&${staffRoleId}>`,
+      thread.send({
+        content: `📬 New modmail thread opened by <@${message.author.id}> — <@&${STAFF_ROLE_ID}>`,
         embeds: [embed]
       });
     }
   }
 
-  // ========== STAFF REPLY HANDLER ==========
-  if (message.guild && message.channel.name.startsWith("modmail-")) {
-    const parts = message.channel.name.split("-");
-    const userIdChunk = parts[parts.length - 1];
-    const targetUser = await client.users.fetch(message.mentions.users.first()?.id || message.author.id).catch(() => null);
+  // --- Handle replies from staff inside a modmail thread ---
+  if (message.guild && message.channel.parentId === MODMAIL_CATEGORY_ID) {
+    if (!message.member.roles.cache.has(STAFF_ROLE_ID)) return; // Only staff allowed
 
-    if (targetUser) {
-      const embed = new EmbedBuilder()
-        .setAuthor({ name: `Staff Reply from ${message.author.tag}`, iconURL: message.author.displayAvatarURL() })
-        .setDescription(message.content || "*No message*")
-        .setColor(0x2ecc71)
-        .setTimestamp();
-
-      targetUser.send({ embeds: [embed] }).catch(() => {
-        message.channel.send("⚠️ Could not send message to user.");
-      });
+    const threadTopic = message.channel.topic;
+    if (!threadTopic || !threadTopic.startsWith("UserID:")) {
+      return message.channel.send("⚠️ Could not determine target user.");
     }
+
+    const userId = threadTopic.replace("UserID:", "").trim();
+    const user = await client.users.fetch(userId).catch(() => null);
+    if (!user) return message.channel.send("⚠️ Unable to find the user.");
+
+    const embed = new EmbedBuilder()
+      .setAuthor({ name: `Staff: ${message.author.tag}`, iconURL: message.author.displayAvatarURL() })
+      .setDescription(message.content || "*No message content*")
+      .setColor(0x2ecc71)
+      .setTimestamp();
+
+    user.send({ embeds: [embed] }).catch(() => {
+      message.channel.send("⚠️ Could not send message to the user’s DMs.");
+    });
   }
 });
 
